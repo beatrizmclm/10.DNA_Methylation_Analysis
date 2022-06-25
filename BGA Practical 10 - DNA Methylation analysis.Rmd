@@ -1,0 +1,323 @@
+---
+title: "DNA Methylation analysis"
+author: "Beatriz Manso"
+date: '2022-05-12'
+output: 
+  distill::distill_article:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: false
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Introduction
+
+Among the epigenetic modifications, DNA methylation is important for regulating gene expression. As a gold standard technology, bisulfite sequencing provides data on genomic methylation patterns as a result of the conversion of the unmethylated cytosines into uracils that are represented as Ts in the data.
+
+
+Set working directory:
+
+```{r}
+setwd("C:/Users/manso/OneDrive - University of West London/MSc Bioinformatics - UWL/6.BGA - Bioinformatics and Genome Analysis/week 8 - DNA methylation analysis")
+```
+
+Install packages and load libraries:
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+ install.packages("BiocManager")
+BiocManager::install("methylKit")
+BiocManager::install("genomation")
+
+library(methylKit)
+library(genomation)
+```
+
+## 1. Data and Quality measures
+
+### Data filtering and exploratory analysis
+
+Get Files:
+
+```{r}
+file.list=list( system.file("extdata",
+"test1.myCpG.txt", package = "methylKit"),
+system.file("extdata",
+"test2.myCpG.txt", package = "methylKit"),
+system.file("extdata",
+"control1.myCpG.txt", package = "methylKit"),
+system.file("extdata",
+"control2.myCpG.txt", package = "methylKit") )
+
+```
+
+
+
+```{r}
+# read the files to a methylRawList object: myobj
+myobj=methRead(file.list,
+sample.id=list("test1","test2","ctrl1","ctrl2"),
+assembly="hg18",
+treatment=c(1,1,0,0),
+context="CpG"
+)
+
+
+## inside the methylRawList object
+length(myobj)
+
+head(myobj[[1]])
+
+```
+
+###  Quality check
+
+```{r}
+getMethylationStats(myobj[[2]],plot=TRUE,both.strands=FALSE)
+```
+
+**Check for general coverage statistics:**
+
+```{r}
+getCoverageStats(myobj[[2]],plot=TRUE,both.strands=FALSE)
+
+```
+
+**Filter:**
+
+```{r}
+filtered.myobj=filterByCoverage(myobj,lo.count=10,lo.perc=NULL,
+hi.count=NULL,hi.perc=99.9)
+```
+
+### Merge samples into a single table:
+
+**Use :: notation to make sure unite() function from methylKit is called:**
+
+```{r}
+meth=methylKit::unite(myobj, destrand=FALSE)
+```
+
+```{r}
+head(meth)
+```
+
+**Create a methylBase object, where only CpGs covered with at least 1 sample per group will be returned there were two groups defined by the treatment vector, given during the creation of myobj: treatment=c(1,1,0,0)**
+
+```{r}
+meth.min=unite(myobj,min.per.group=1L)
+
+```
+
+### Filtering CpGs
+
+```{r}
+pm=percMethylation(meth) # get percent methylation matrix
+mds=matrixStats::rowSds(pm) # calculate standard deviation of CpGs
+head(meth[mds>20,])
+
+```
+
+```{r}
+hist(mds,col="cornflowerblue",xlab="Std. dev. per CpG")
+
+```
+
+**methylKit object to a GRanges object to remove C->T mutations locations. These locations should be removed from the analysis as they do not represent bisulfite treatment associated conversions.**
+
+```{r}
+library(GenomicRanges)
+mut=GRanges(seqnames=c("chr21","chr21"),
+ranges=IRanges(start=c(9853296, 9853326),
+end=c( 9853296,9853326)))
+
+```
+
+**Select CpGs that do not overlap with mutations:**
+
+```{r}
+sub.meth=meth[! as(meth,"GRanges") %over% mut,]
+nrow(meth)
+
+```
+
+```{r}
+nrow(sub.meth)
+
+```
+
+### Clustering samples
+
+**Cluster and create dendrogram to group data points by their similarity:**
+
+```{r}
+clusterSamples(meth, dist="correlation", method="ward", plot=TRUE)
+```
+
+
+**Setting the plot=FALSE will return a dendrogram**
+
+```{r}
+clusterSamples(meth, dist="correlation", method="ward", plot=FALSE)
+```
+
+### PCA -  Principal component analysis
+
+**Perform Principal component analysis (PCA) to mathematically assess possible correlated variables and uncorrelated variables:**
+
+```{r}
+PCASamples(meth, screeplot=TRUE)
+
+```
+
+**Plot PC1 and PC2 axis as scatter plot:**
+
+```{r}
+pc=PCASamples(meth,obj.return = TRUE, adj.lim=c(1,1))
+
+```
+
+## 2. Extracting interesting regions: segmentation and differential methylation
+
+### Differential methylation with Fisher’s exact test
+
+```{r}
+getSampleID(meth)
+```
+```{r}
+new.meth=reorganize(meth,sample.ids=c("test1","ctrl1"),treatment=c(1,0))
+dmf=calculateDiffMeth(new.meth)
+```
+
+**Pool the samples from the same group by adding up the number of Cs and Ts per group:**
+
+```{r}
+pooled.meth=pool(meth,sample.ids=c("test","control"))
+dm.pooledf=calculateDiffMeth(pooled.meth)
+```
+
+```{r}
+#Get differentially methylated bases/regions with specific cutoffs:
+all.diff=getMethylDiff(dm.pooledf,difference=25,qvalue=0.01,type="all")
+
+#Get hyper-methylated
+hyper=getMethylDiff(dm.pooledf,difference=25,qvalue=0.01,type="hyper")
+
+#Get hypo-methylated
+hypo=getMethylDiff(dm.pooledf,difference=25,qvalue=0.01,type="hypo")
+
+#Using [ ] notation
+hyper2=dm.pooledf[dm.pooledf$qvalue < 0.01 & dm.pooledf$meth.diff > 25,]
+
+#Logistic regression based tests
+dm.lr=calculateDiffMeth(meth,overdispersion = "MN",test ="Chisq")
+
+#with Betabinomial distribution based tests
+dm.dss=calculateDiffMethDSS(meth)
+
+# Differential methylation for regions rather than base-pairs
+tiles=tileMethylCounts(myobj,win.size=1000,step.size=1000)
+
+head(tiles[[1]],3)
+
+```
+
+**Summarizes the methylation information over a given set of promoter regions and outputs a methylRaw or methylRawList object:**
+
+Read the gene BED file:
+
+```{r}
+# 
+gene.obj=readTranscriptFeatures(system.file("extdata", "refseq.hg18.bed.txt",
+package = "methylKit"))
+
+```
+
+Adding covariates:
+
+```{r}
+# Adding covariates
+covariates=data.frame(age=c(30,80,34,30,80,40))
+
+sim.methylBase=dataSim(replicates=6,sites=1000,treatment=c(rep(1,3),rep(0,3)),
+                       covariates=covariates,sample.ids=c(paste0("test",1:3),paste0("ctrl",1:3)))
+
+my.diffMeth3=calculateDiffMeth(sim.methylBase, covariates=covariates,
+                               overdispersion="MN",test="Chisq",mc.cores=1)
+```
+
+###  Methylation segmentation
+
+Read Data:
+
+```{r}
+methFile=system.file("extdata","H1.chr21.chr22.rds", package="compGenomRData")
+mbw=readRDS(methFile)
+```
+
+Segment the methylation data:
+
+```{r}
+res=methSeg(mbw, minSeg=10, G=1:4, join.neighbours = TRUE)
+```
+
+**Plot mean methylation value and the length of the segment as a scatter plot to examine the characteristics of the segment classes:**
+
+```{r}
+plot(res$seg.mean, log10(width(res)), pch=20,
+     col=scales::alpha(rainbow(4)[as.numeric(res$seg.group)], 0.2),
+     ylab="log10(length)",
+     xlab="methylation proportion")
+
+
+```
+
+### Working with large files
+
+```{r}
+myobj=methRead( file.list, sample.id=list("test1","test2","ctrl1","ctrl2"),
+                assembly="hg18",treatment=c(1,1,0,0), dbtype="tabix")
+```
+
+### Annotation of DMRs/DMCs and segments
+
+Read the gene BED file:
+
+```{r}
+transcriptBED=system.file("extdata", "refseq.hg18.bed.txt",
+                          package = "methylKit")
+gene.obj=readTranscriptFeatures(transcriptBED)
+
+```
+
+**Annotate differentially methylated CpGs with promoter/exon/intron using annotation data:**
+
+```{r}
+annotateWithGeneParts(as(all.diff,"GRanges"),gene.obj)
+```
+
+**We can read the CpG island annotation and annotate our differentially methylated bases/regions with them:**
+
+```{r}
+cpg.file=system.file("extdata", "cpgi.hg18.bed.txt",
+                     package = "methylKit")
+
+cpg.obj=readFeatureFlank(cpg.file,
+                         feature.flank.name=c("CpGi","shores"))
+```
+
+**Convert methylDiff object to GRanges and annotate:**
+
+```{r}
+diffCpGann=annotateWithFeatureFlank(as(all.diff,"GRanges"),
+                                    cpg.obj$CpGi,cpg.obj$shores,
+                                    feature.name="CpGi",flank.name="shores")
+```
+
